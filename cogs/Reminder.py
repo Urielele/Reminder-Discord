@@ -1,82 +1,109 @@
+"""
+cogs/Reminder.py — Cog untuk menampilkan daftar dan detail tugas kuliah.
+
+Menyediakan perintah untuk melihat semua tugas server dan detail
+tugas berdasarkan ID. Data diambil dari database PostgreSQL.
+
+Commands:
+    !daftar_tugas      — Tampilkan semua tugas server, urut deadline terdekat
+    !tugas <id>        — Tampilkan detail tugas berdasarkan ID
+"""
+
+import logging
+
 import discord
 from discord.ext import commands
-import pandas as pd
 
-df = None
+from utils.db import get_tugas_detail, get_tugas_list
+from utils.formatter import build_daftar_embed, build_tugas_embed
 
-def read_data():
-    global df
-    df = pd.read_excel('.\cogs\database\Schedule.xlsx')
-    df["dl_tugas"] = df["dltgl_tugas"].astype(str) + " " + df["dljm_tugas"].astype(str)
-    df["fdltgl_tugas"] = df['dltgl_tugas'].dt.strftime('%B %d, %Y')
-    
-    
-class Reminder(commands.Cog):    
+logger = logging.getLogger(__name__)
 
-    def __init__(self, bot):
+
+class Reminder(commands.Cog):
+    """Cog untuk menampilkan daftar dan detail tugas kuliah dari database."""
+
+    def __init__(self, bot: commands.Bot) -> None:
+        """Inisialisasi Reminder cog.
+
+        Args:
+            bot: Instance Discord bot.
+        """
         self.bot = bot
-    
-    @commands.Cog.listener()
-    async def on_ready(self):
-        read_data()
-        print("Reminder.py is ready")
 
-    @commands.command()
-    async def tugas(self, ctx, id: int = None):
+    @commands.command(name="daftar_tugas")
+    async def daftar_tugas(self, ctx: commands.Context) -> None:
+        """Tampilkan semua tugas yang terdaftar untuk server ini.
 
+        Mengambil semua tugas dari database yang terkait dengan server ini,
+        diurutkan berdasarkan deadline terdekat, dan menampilkannya dalam
+        format embed Discord.
+
+        Args:
+            ctx: Konteks perintah Discord.
+        """
+        try:
+            tugas_list = await get_tugas_list(str(ctx.guild.id))
+            embed = build_daftar_embed(tugas_list)
+            await ctx.send(embed=embed)
+        except Exception as exc:
+            logger.error(
+                "Gagal mengambil daftar tugas untuk server '%s': %s",
+                ctx.guild.name,
+                exc,
+                exc_info=True,
+            )
+            await ctx.send("❗ Terjadi kesalahan saat mengambil daftar tugas. Silakan coba lagi.")
+
+    @commands.command(name="tugas")
+    async def tugas(self, ctx: commands.Context, id: str = None) -> None:
+        """Tampilkan detail tugas berdasarkan ID.
+
+        Mengambil detail satu tugas dari database berdasarkan ID yang diberikan
+        dan menampilkannya dalam format embed Discord.
+
+        Args:
+            ctx: Konteks perintah Discord.
+            id: ID tugas yang ingin dilihat detailnya (harus bilangan bulat positif).
+        """
         if id is None:
-            await ctx.send("❓ Gunakan **!tugas <ID>**")
+            await ctx.send("❓ Gunakan **!tugas <ID>**\nContoh: `!tugas 1`")
+            return
+
+        # Validasi id adalah bilangan bulat positif
+        try:
+            id_int = int(id)
+            if id_int <= 0:
+                raise ValueError("ID harus positif")
+        except ValueError:
+            await ctx.send("❗ ID harus berupa angka positif. Contoh: `!tugas 1`")
             return
 
         try:
-            result = df[df['id_tugas'] == id].iloc[0]
-        except IndexError:
-            await ctx.send("❗ Tugas dengan ID tersebut tidak ditemukan.")
-            return
+            tugas_data = await get_tugas_detail(id_int, str(ctx.guild.id))
 
-        embed = discord.Embed(
-            title=result['matkul_tugas'],
-            description=result['desk_tugas'],
-            color=discord.Color.blue()
-        )
-        
-        embed.add_field(
-            name="📆 Tanggal",
-            value=result['fdltgl_tugas'],
-            inline=True
-        )
+            if tugas_data is None:
+                await ctx.send(f"❗ Tugas dengan ID **{id_int}** tidak ditemukan.")
+                return
 
-        embed.add_field(
-            name="⏰ Jam",
-            value=result['dljm_tugas'],
-            inline=True
-        )
-        
-        embed.set_footer(text=f"ID Tugas: {id}")
+            embed = build_tugas_embed(tugas_data)
+            await ctx.send(embed=embed)
 
-        await ctx.send(embed=embed)
-
-
-    @commands.command()
-    async def daftar_tugas(self, ctx):
-        show = df[['matkul_tugas', "dl_tugas", "id_tugas"]]
-
-        embed = discord.Embed(
-            title="📚 Daftar Tugas",
-            color=discord.Color.blue()
-        )
-
-        for _, row in show.iterrows():
-            embed.add_field(
-                name=f"{row['matkul_tugas']} (ID = {row['id_tugas']})",
-                value=f"🕒 {row['dl_tugas']}",
-                inline=False
+        except Exception as exc:
+            logger.error(
+                "Gagal mengambil detail tugas ID %s untuk server '%s': %s",
+                id_int,
+                ctx.guild.name,
+                exc,
+                exc_info=True,
             )
-
-        await ctx.send(embed=embed)
-    
-    
+            await ctx.send("❗ Terjadi kesalahan saat mengambil detail tugas. Silakan coba lagi.")
 
 
-async def setup(bot):
+async def setup(bot: commands.Bot) -> None:
+    """Fungsi setup untuk mendaftarkan cog ke bot.
+
+    Args:
+        bot: Instance Discord bot.
+    """
     await bot.add_cog(Reminder(bot))
